@@ -286,23 +286,32 @@ export default function ChatRoomPage() {
     }
   }
 
+  // Play send sound effect (LINE-style)
   const playSendSound = () => {
     try {
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+
+      // Resume AudioContext for mobile (required after user interaction)
+      if (audioContext.state === 'suspended') {
+        audioContext.resume()
+      }
+
       const oscillator = audioContext.createOscillator()
       const gainNode = audioContext.createGain()
 
       oscillator.connect(gainNode)
       gainNode.connect(audioContext.destination)
 
-      oscillator.frequency.setValueAtTime(400, audioContext.currentTime)
-      oscillator.frequency.exponentialRampToValueAtTime(10, audioContext.currentTime + 0.1)
+      // LINE-style: quick "bloop" sound
+      oscillator.type = 'sine'
+      oscillator.frequency.setValueAtTime(2500, audioContext.currentTime)
+      oscillator.frequency.exponentialRampToValueAtTime(400, audioContext.currentTime + 0.08)
 
-      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime)
-      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1)
+      gainNode.gain.setValueAtTime(0.25, audioContext.currentTime)
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.08)
 
       oscillator.start(audioContext.currentTime)
-      oscillator.stop(audioContext.currentTime + 0.1)
+      oscillator.stop(audioContext.currentTime + 0.08)
     } catch (error) {
       console.error('Error playing sound:', error)
     }
