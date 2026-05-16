@@ -286,8 +286,33 @@ export default function ChatRoomPage() {
     }
   }
 
+  const playSendSound = () => {
+    try {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const oscillator = audioContext.createOscillator()
+      const gainNode = audioContext.createGain()
+
+      oscillator.connect(gainNode)
+      gainNode.connect(audioContext.destination)
+
+      oscillator.frequency.setValueAtTime(400, audioContext.currentTime)
+      oscillator.frequency.exponentialRampToValueAtTime(10, audioContext.currentTime + 0.1)
+
+      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime)
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1)
+
+      oscillator.start(audioContext.currentTime)
+      oscillator.stop(audioContext.currentTime + 0.1)
+    } catch (error) {
+      console.error('Error playing sound:', error)
+    }
+  }
+
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault()
+
+    // Play send sound
+    playSendSound()
 
     // Check if there's content to send
     const hasText = newMessage.trim().length > 0
@@ -440,10 +465,10 @@ export default function ChatRoomPage() {
                       </p>
                     )}
                     <div
-                      className={`px-4 py-2 rounded-2xl ${
+                      className={`px-1 py-1 rounded-xl ${
                         isMe
-                          ? 'bg-blue-600 text-white rounded-br-sm'
-                          : 'bg-white text-gray-800 rounded-bl-sm'
+                          ? 'bg-blue-600 text-white rounded-br-xs'
+                          : 'bg-white text-gray-800 rounded-bl-xs'
                       }`}
                     >
                       {/* Show image if exists */}
@@ -451,7 +476,7 @@ export default function ChatRoomPage() {
                         <img
                           src={msg.image_url}
                           alt="Uploaded"
-                          className="max-w-[200px] max-h-[200px] rounded-lg mb-2 cursor-pointer hover:opacity-90 transition-opacity"
+                          className="max-w-[200px] max-h-[200px] rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
                           loading="lazy"
                           onClick={() => setFullImage(msg.image_url!)}
                         />
