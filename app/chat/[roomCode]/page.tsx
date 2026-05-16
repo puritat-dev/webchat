@@ -583,16 +583,27 @@ export default function ChatRoomPage() {
           >
             {showMenu ? '×' : '+'}
           </button>
-          <input
-            type="text"
-            value={newMessage}
-            onChange={handleInputChange}
-            placeholder="พิมพ์ข้อความ..."
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
-          />
-          {uploadingImage && (
-            <span className="text-sm text-gray-500">⏳</span>
-          )}
+          <div className="flex-1 relative">
+            <input
+              type="text"
+              value={newMessage}
+              onChange={handleInputChange}
+              placeholder="พิมพ์ข้อความ..."
+              className="w-full px-4 py-2 pr-12 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+            />
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+              {uploadingImage && (
+                <span className="text-sm text-gray-500">⏳</span>
+              )}
+              <button
+                type="submit"
+                disabled={!newMessage.trim() && !selectedImage}
+                className="p-1.5 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                <img src="/icon/send.png" alt="ส่ง" className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
         </form>
       </div>
 
