@@ -9,6 +9,12 @@ export default function ChatLandingPage() {
   const [name, setName] = useState('')
   const [roomCode, setRoomCode] = useState('')
 
+  const handleRoomCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // อนุญาตเฉพาะภาษาอังกฤษและตัวเลขเท่านั้น
+    const value = e.target.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
+    setRoomCode(value)
+  }
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (name.trim() && roomCode.trim()) {
@@ -52,13 +58,13 @@ export default function ChatLandingPage() {
             <input
               type="text"
               value={roomCode}
-              onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+              onChange={handleRoomCodeChange}
               placeholder="เช่น: ROOM1, ABC123, 9999..."
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-center text-xl tracking-wider text-blue-600"
               required
             />
             <p className="text-xs text-gray-400 mt-1">
-              แชร์โค้ดนี้ให้เพื่อนเพื่อเข้าห้องเดียวกัน
+              ภาษาอังกฤษและตัวเลขเท่านั้น (A-Z, 0-9)
             </p>
           </div>
 
