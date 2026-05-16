@@ -6,6 +6,8 @@
 
 แอปพลิเคชันแชทสดแบบไม่ระบุตัวตนด้วยรหัสห้อง ผู้ใช้กรอกชื่อและรหัสห้องเพื่อเข้าร่วม/สร้างห้องแชท ผู้ใช้หลายคนที่ใช้รหัสห้องเดียวกันสามารถแชทร่วมกันได้实时 หน้าจอเป็นภาษาไทย
 
+**ข้อจำกัด:** รหัสห้องต้องเป็นภาษาอังกฤษและตัวเลขเท่านั้น (A-Z, 0-9) เพื่อป้องกันปัญหา Supabase Storage ที่ไม่รองรับภาษาไทยใน path
+
 ## คำสั่ง
 
 ```bash
@@ -15,17 +17,85 @@ npm run start        # Run production server
 npm run lint         # Run ESLint
 ```
 
-## การตั้งค่า Database
+## การตั้งค่า Database (ครั้งแรก)
 
-เรียกใช้ไฟล์ SQL ในไดเรกทอรี `supabase/` ตามลำดับ:
-1. **message_reads.sql** - สร้างตารางสำหรับบันทึกการอ่านข้อความ
-2. **create_storage.sql** - สร้าง storage bucket สำหรับอัปโหลดรูปภาพ
-3. **check_realtime.sql** - ตรวจสอบว่า realtime เปิดใช้งานแล้ว
+### 1. สร้างตาราง message_reads
 
-**สำคัญ** - เปิดใช้งาน realtime สำหรับแชท:
+ไปที่ Supabase Dashboard → SQL Editor รัน:
+
+```sql
+CREATE TABLE IF NOT EXISTS message_reads (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  message_id TEXT NOT NULL,
+  room_code TEXT NOT NULL,
+  reader_name TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_reads_message_id ON message_reads(message_id);
+CREATE INDEX IF NOT EXISTS idx_message_reads_room_code ON message_reads(room_code);
+```
+
+### 2. เปิดใช้งาน Realtime
+
 ```sql
 ALTER PUBLICATION supabase_realtime ADD TABLE messages;
+ALTER PUBLICATION supabase_realtime ADD TABLE message_reads;
 ```
+
+ตรวจสอบได้ด้วย:
+```sql
+SELECT * FROM pg_publication_tables WHERE pubname = 'supabase_realtime';
+```
+
+### 3. ตั้งค่า RLS Policies (สำคัญ!)
+
+สำหรับ message_reads:
+```sql
+ALTER TABLE message_reads ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow public insert"
+ON message_reads FOR INSERT
+TO public
+WITH CHECK (true);
+
+CREATE POLICY "Allow public select"
+ON message_reads FOR SELECT
+TO public
+USING (true);
+```
+
+### 4. สร้าง Storage Bucket
+
+**วิธีที่ 1: ผ่าน Dashboard**
+1. ไปที่ Storage → "Create a new bucket"
+2. ชื่อ: `attachments`
+3. เปิด "Public bucket"
+
+**วิธีที่ 2: ผ่าน SQL**
+```sql
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('attachments', 'attachments', true)
+ON CONFLICT (id) DO NOTHING;
+```
+
+### 5. ตั้งค่า Storage Policies
+
+```sql
+-- อนุญาตให้อ่านรูปได้
+CREATE POLICY "Public Read"
+ON storage.objects FOR SELECT
+TO public
+USING ( bucket_id = 'attachments' );
+
+-- อนุญาตให้อัปโหลดได้
+CREATE POLICY "Public Upload"
+ON storage.objects FOR INSERT
+TO public
+WITH CHECK ( bucket_id = 'attachments' );
+```
+
+---
 
 ## สถาปัตยกรรม
 
@@ -44,7 +114,7 @@ ALTER PUBLICATION supabase_realtime ADD TABLE messages;
 ```
 app/
 ├── page.tsx              # Root page (redirect ไป /chat)
-├── chat/page.tsx         # หน้า login (กรอกชื่อ + รหัสห้อง)
+├── chat/page.tsx         # หน้า login (กรอกชื่อ + รหัสห้อง A-Z, 0-9)
 └── chat/[roomCode]/page.tsx  # ห้องแชท实时
 lib/
 ├── types.ts              # TypeScript interfaces (Message, MessageRead)
@@ -54,6 +124,8 @@ lib/
 ### รูปแบบสำคัญ
 
 **การเข้ารหัสรหัสห้อง**: รหัสห้องถูก encode ด้วย base64 ใน URL (`lib/hash.ts`) นี่เป็นการปกปิดรหัสใน URL แต่ **ไม่ใช่** เรื่องความปลอดภัย - เพียงทำให้ URL ดูยากขึ้นเล็กน้อย
+
+**Room Code Restrictions**: รหัสห้องต้องเป็นภาษาอังกฤษและตัวเลขเท่านั้น (A-Z, 0-9) และถูกแปลงเป็นตัวพิมพ์ใหญ่อัตโนมัติ เพื่อป้องกันปัญหา Supabase Storage ที่ไม่รองรับภาษาไทยใน path
 
 **Optimistic UI**: เมื่อผู้ใช้ส่งข้อความ จะแสดงทันทีด้วย temp ID (`temp-${timestamp}`) เมื่อ database ยืนยันผ่าน realtime ข้อความชั่วคราวจะถูกแทนที่ด้วยข้อความจริง เพื่อป้องกันข้อความซ้ำ
 
@@ -65,10 +137,21 @@ lib/
 - Broadcast ผ่าน `channel.send({ type: 'broadcast', event: 'message-read' })` แบบ实时
 - บันทึกลงตาราง `message_reads` ด้วยสำหรับประวัติ
 - ข้อความจะถูก mark ว่าอ่านแล้วเมื่อเลื่อนเข้ามาในมุมมอง (threshold 100px)
-- ข้อความของตัวเองไม่เคยถูก mark ว่าอ่านโดยผู้ส่งเอง
+- แสดงสถานะ ✓ (ส่งแล้ว) และ ✓✓ (อ่านแล้ว) สำหรับข้อความของตัวเอง
 
 **Image Uploads (การอัปโหลดรูป)**:
-- เก็บใน Supabase Storage bucket `attachments` (หมายเหตุ: code อ้างอิง 'attachments' แต่ create_storage.sql สร้าง 'chat-images' - มีความไม่ตรงกัน)
+- เก็บใน Supabase Storage bucket `attachments`
 - ขนาดสูงสุด 5MB, เฉพาะไฟล์รูปภาพ
 - รูปแบบ path: `{roomCode}/{timestamp}_{random}.{ext}`
 - Lazy-loaded ในห้องแชท, คลิกเพื่อดูขนาดเต็ม
+- ต้องตั้งค่า Storage Policies ให้อัปโหลดและอ่านได้แบบ public
+
+## ไฟล์ SQL อ้างอิง
+
+ไฟล์ใน `supabase/` directory:
+- `message_reads.sql` - สร้างตาราง message_reads
+- `setup_message_reads.sql` - สร้างตาราง (fallback ถ้า message_reads.sql ใช้ไม่ได้)
+- `create_storage.sql` - สร้าง storage bucket (ชื่อ chat-images - ต้องเปลี่ยนเป็น attachments)
+- `check_realtime.sql` - ตรวจสอบ realtime publication
+
+**หมายเหตุ:** `create_storage.sql` สร้าง bucket ชื่อ `chat-images` แต่โค้ดใช้ `attachments` - ต้องสร้าง bucket ชื่อ `attachments` แทน
