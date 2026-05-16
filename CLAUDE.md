@@ -1,46 +1,74 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+ไฟล์นี้ให้คำแนะนำแก่ Claude Code (claude.ai/code) สำหรับการทำงานใน repository นี้
 
-## Project Overview
+## ภาพรวมโปรเจกต์
 
-Real-time anonymous chat application with room codes. Users enter their name and a room code to join/create chat rooms. Multiple users with the same room code can chat in real-time.
+แอปพลิเคชันแชทสดแบบไม่ระบุตัวตนด้วยรหัสห้อง ผู้ใช้กรอกชื่อและรหัสห้องเพื่อเข้าร่วม/สร้างห้องแชท ผู้ใช้หลายคนที่ใช้รหัสห้องเดียวกันสามารถแชทร่วมกันได้实时 หน้าจอเป็นภาษาไทย
 
-## Commands
+## คำสั่ง
 
 ```bash
-npm run dev          # Start dev server at http://localhost:3000
+npm run dev          # เริ่ม dev server ที่ http://localhost:3000
 npm run build        # Production build
 npm run start        # Run production server
 npm run lint         # Run ESLint
 ```
 
-## Architecture
+## การตั้งค่า Database
 
-### Supabase Setup
-- Client configured in `utils/supabase.ts`
-- Environment variables in `.env.local`:
-  - `NEXT_PUBLIC_SUPABASE_URL` (base URL, no `/rest/v2/` suffix)
-  - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (anon key)
+เรียกใช้ไฟล์ SQL ในไดเรกทอรี `supabase/` ตามลำดับ:
+1. **message_reads.sql** - สร้างตารางสำหรับบันทึกการอ่านข้อความ
+2. **create_storage.sql** - สร้าง storage bucket สำหรับอัปโหลดรูปภาพ
+3. **check_realtime.sql** - ตรวจสอบว่า realtime เปิดใช้งานแล้ว
 
-### Database Table
-- `messages` - Chat messages with room_code, sender_name, message, created_at
-
-**Realtime Setup** (required for chat):
+**สำคัญ** - เปิดใช้งาน realtime สำหรับแชท:
 ```sql
 ALTER PUBLICATION supabase_realtime ADD TABLE messages;
 ```
 
-### App Structure
+## สถาปัตยกรรม
+
+### การตั้งค่า Supabase
+- Client: `utils/supabase.ts`
+- Environment variables ใน `.env.local`:
+  - `NEXT_PUBLIC_SUPABASE_URL` (base URL)
+  - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (anon key)
+
+### โครงสร้าง Database
+- **messages** - ข้อความแชท (id, room_code, sender_name, message, image_url, created_at)
+- **message_reads** - บันทึกการอ่านข้อความ (id, message_id, room_code, reader_name, created_at)
+- **storage.buckets** - bucket `attachments` สำหรับเก็บรูปที่อัปโหลด
+
+### โครงสร้าง App
 ```
 app/
-├── page.tsx              # Root page (redirects to /chat)
-├── chat/page.tsx         # Login page (name + room code)
-└── chat/[roomCode]/      # Real-time chat room
+├── page.tsx              # Root page (redirect ไป /chat)
+├── chat/page.tsx         # หน้า login (กรอกชื่อ + รหัสห้อง)
+└── chat/[roomCode]/page.tsx  # ห้องแชท实时
+lib/
+├── types.ts              # TypeScript interfaces (Message, MessageRead)
+└── hash.ts               # การ encode/decode รหัสห้อง
 ```
 
-### Key Patterns
+### รูปแบบสำคัญ
 
-**Optimistic UI**: When user sends a message, it appears immediately with a temp ID. When database confirms via realtime, the temp message is replaced with the real one to prevent duplicates.
+**การเข้ารหัสรหัสห้อง**: รหัสห้องถูก encode ด้วย base64 ใน URL (`lib/hash.ts`) นี่เป็นการปกปิดรหัสใน URL แต่ **ไม่ใช่** เรื่องความปลอดภัย - เพียงทำให้ URL ดูยากขึ้นเล็กน้อย
 
-**Real-time Subscription**: Uses Supabase Realtime with `postgres_changes` event filter for `room_code=eq.{roomCode}`.
+**Optimistic UI**: เมื่อผู้ใช้ส่งข้อความ จะแสดงทันทีด้วย temp ID (`temp-${timestamp}`) เมื่อ database ยืนยันผ่าน realtime ข้อความชั่วคราวจะถูกแทนที่ด้วยข้อความจริง เพื่อป้องกันข้อความซ้ำ
+
+**Real-time Subscriptions**: ใช้ 2 channels ต่อหนึ่งห้อง:
+1. `postgres_changes` - ฟัง INSERT บนตาราง messages กรองด้วย `room_code=eq.{roomCode}`
+2. `broadcast` - สำหรับ read receipts ผ่าน event 'message-read'
+
+**Read Receipts (การยืนยันการอ่าน)**:
+- Broadcast ผ่าน `channel.send({ type: 'broadcast', event: 'message-read' })` แบบ实时
+- บันทึกลงตาราง `message_reads` ด้วยสำหรับประวัติ
+- ข้อความจะถูก mark ว่าอ่านแล้วเมื่อเลื่อนเข้ามาในมุมมอง (threshold 100px)
+- ข้อความของตัวเองไม่เคยถูก mark ว่าอ่านโดยผู้ส่งเอง
+
+**Image Uploads (การอัปโหลดรูป)**:
+- เก็บใน Supabase Storage bucket `attachments` (หมายเหตุ: code อ้างอิง 'attachments' แต่ create_storage.sql สร้าง 'chat-images' - มีความไม่ตรงกัน)
+- ขนาดสูงสุด 5MB, เฉพาะไฟล์รูปภาพ
+- รูปแบบ path: `{roomCode}/{timestamp}_{random}.{ext}`
+- Lazy-loaded ในห้องแชท, คลิกเพื่อดูขนาดเต็ม

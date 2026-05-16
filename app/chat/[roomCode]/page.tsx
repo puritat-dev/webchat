@@ -1,11 +1,16 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/utils/supabase'
 import { RealtimeChannel } from '@supabase/supabase-js'
 import { Message } from '@/lib/types'
 import { decodeRoomCode } from '@/lib/hash'
+
+interface MessageReadPayload {
+  message_id: string
+  reader_name: string
+}
 
 export default function ChatRoomPage() {
   const params = useParams()
@@ -17,11 +22,21 @@ export default function ChatRoomPage() {
 
   const [userName, setUserName] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
+  const [messageReads, setMessageReads] = useState<Record<string, string[]>>({})
   const [newMessage, setNewMessage] = useState('')
   const [loading, setLoading] = useState(true)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const [hasNewMessages, setHasNewMessages] = useState(false)
+  const [selectedImage, setSelectedImage] = useState<File | null>(null)
+  const [imagePreview, setImagePreview] = useState<string | null>(null)
+  const [uploadingImage, setUploadingImage] = useState(false)
+  const [fullImage, setFullImage] = useState<string | null>(null)
+  const [showMenu, setShowMenu] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
   const emojiPickerRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const channelRef = useRef<RealtimeChannel | null>(null)
 
   // Get user name from localStorage and validate room code
@@ -33,6 +48,71 @@ export default function ChatRoomPage() {
     }
     setUserName(storedName)
   }, [router, roomCode])
+
+  // Mark message as read and broadcast
+  const markMessageAsRead = useCallback(async (messageId: string) => {
+    if (!userName || !roomCode) return
+
+    // Check if already read by this user
+    const existingReads = messageReads[messageId] || []
+    if (existingReads.includes(userName)) return
+
+    // Broadcast read event
+    if (channelRef.current) {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'message-read',
+        payload: { message_id: messageId, reader_name: userName } as MessageReadPayload,
+      })
+    }
+
+    // Save to database (for history)
+    await supabase
+      .from('message_reads')
+      .insert({
+        message_id: messageId,
+        room_code: roomCode,
+        reader_name: userName
+      })
+
+    // Update local state
+    setMessageReads(prev => ({
+      ...prev,
+      [messageId]: [...(prev[messageId] || []), userName]
+    }))
+  }, [userName, roomCode, messageReads])
+
+  // Fetch message reads for a room (on initial load)
+  const fetchMessageReads = useCallback(async () => {
+    if (!roomCode) return
+
+    const { data, error } = await supabase
+      .from('message_reads')
+      .select('*')
+      .eq('room_code', roomCode)
+
+    if (!error && data) {
+      const readsByMessage: Record<string, string[]> = {}
+      data.forEach((read: any) => {
+        if (!readsByMessage[read.message_id]) {
+          readsByMessage[read.message_id] = []
+        }
+        readsByMessage[read.message_id].push(read.reader_name)
+      })
+      setMessageReads(readsByMessage)
+    }
+  }, [roomCode])
+
+  // Mark all visible messages as read
+  const markVisibleMessagesAsRead = useCallback(() => {
+    messages.forEach(msg => {
+      // Don't mark own messages as read
+      if (msg.sender_name !== userName && !msg.id.startsWith('temp-')) {
+        markMessageAsRead(msg.id)
+      }
+    })
+    setHasNewMessages(false)
+  }, [messages, userName, markMessageAsRead])
 
   // Fetch initial messages and setup realtime subscription
   useEffect(() => {
@@ -52,8 +132,9 @@ export default function ChatRoomPage() {
     }
 
     fetchMessages()
+    fetchMessageReads()
 
-    // Setup realtime subscription
+    // Setup realtime subscription for messages and reads
     const channel = supabase
       .channel(`room:${roomCode}`)
       .on(
@@ -67,28 +148,38 @@ export default function ChatRoomPage() {
         (payload) => {
           const newMsg = payload.new as Message
           setMessages((prev) => {
-            // ถ้าเป็นข้อความของตัวเอง และมีใน list แล้ว (temp id) ให้ลบ temp ออกแล้วใส่ของจริง
-            // ถ้าเป็นข้อความของคนอื่น หรือยังไม่มีใน list ให้เพิ่ม
             const existingTempIndex = prev.findIndex(
               (m) => m.id.startsWith('temp-') && m.sender_name === newMsg.sender_name && m.message === newMsg.message
             )
 
             if (existingTempIndex !== -1) {
-              // Replace temp message with real one
               const updated = [...prev]
               updated[existingTempIndex] = newMsg
               return updated
             }
 
-            // Check for duplicate (by id) - don't add if already exists
             if (prev.some((m) => m.id === newMsg.id)) {
               return prev
+            }
+
+            if (newMsg.sender_name !== userName) {
+              setHasNewMessages(true)
             }
 
             return [...prev, newMsg]
           })
         }
       )
+      // Listen for message-read events (via broadcast)
+      .on('broadcast', { event: 'message-read' }, ({ payload }) => {
+        const read = payload as MessageReadPayload
+        if (read.reader_name !== userName) {
+          setMessageReads(prev => ({
+            ...prev,
+            [read.message_id]: [...(prev[read.message_id] || []), read.reader_name]
+          }))
+        }
+      })
       .subscribe()
 
     channelRef.current = channel
@@ -98,43 +189,151 @@ export default function ChatRoomPage() {
         supabase.removeChannel(channelRef.current)
       }
     }
-  }, [roomCode])
+  }, [roomCode, userName, fetchMessageReads])
 
   // Auto scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+
+    // Auto-mark messages as read after scroll (with a small delay)
+    const timer = setTimeout(() => {
+      markVisibleMessagesAsRead()
+    }, 500)
+
+    return () => clearTimeout(timer)
+  }, [messages, markVisibleMessagesAsRead])
+
+  // Detect if user is at bottom to mark messages as read
+  useEffect(() => {
+    const container = messagesContainerRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container
+      const isAtBottom = scrollHeight - scrollTop - clientHeight < 100
+
+      if (isAtBottom && hasNewMessages) {
+        markVisibleMessagesAsRead()
+      }
+    }
+
+    container.addEventListener('scroll', handleScroll)
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [hasNewMessages, markVisibleMessagesAsRead])
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setNewMessage(e.target.value)
+  }
+
+  // Handle image selection
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      alert('กรุณาเลือกไฟล์รูปภาพ')
+      return
+    }
+
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      alert('รูปภาพต้องไม่เกิน 5MB')
+      return
+    }
+
+    setSelectedImage(file)
+    setImagePreview(URL.createObjectURL(file))
+  }
+
+  // Upload image to Supabase Storage
+  const uploadImage = async (file: File): Promise<string | null> => {
+    try {
+      const fileExt = file.name.split('.').pop()
+      const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`
+      const filePath = `${roomCode}/${fileName}`
+
+      const { data, error } = await supabase.storage
+        .from('attachments')
+        .upload(filePath, file)
+
+      if (error) {
+        console.error('Error uploading image:', error)
+        return null
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('attachments')
+        .getPublicUrl(filePath)
+
+      return publicUrl
+    } catch (error) {
+      console.error('Error uploading image:', error)
+      return null
+    }
+  }
+
+  // Clear selected image
+  const clearImage = () => {
+    setSelectedImage(null)
+    if (imagePreview) {
+      URL.revokeObjectURL(imagePreview)
+      setImagePreview(null)
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newMessage.trim() || !roomCode) return
+
+    // Check if there's content to send
+    const hasText = newMessage.trim().length > 0
+    const hasImage = selectedImage !== null
+
+    if (!hasText && !hasImage) return
+    if (!roomCode) return
 
     const messageText = newMessage.trim()
     setNewMessage('')
+    setUploadingImage(true)
 
-    // Optimistic UI - show message immediately
+    // Upload image if selected
+    let imageUrl: string | undefined
+    if (selectedImage) {
+      imageUrl = await uploadImage(selectedImage) || undefined
+      clearImage()
+    }
+
+    setUploadingImage(false)
+
     const tempMessage: Message = {
       id: `temp-${Date.now()}`,
       room_code: roomCode,
       sender_name: userName,
       message: messageText,
+      image_url: imageUrl,
       created_at: new Date().toISOString()
     }
     setMessages((prev) => [...prev, tempMessage])
 
-    // Send to database
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('messages')
       .insert({
         room_code: roomCode,
         sender_name: userName,
-        message: messageText
+        message: messageText,
+        image_url: imageUrl
       })
+      .select()
 
     if (error) {
       console.error('Error sending message:', error)
-      // Remove temp message on error
       setMessages((prev) => prev.filter((m) => m.id !== tempMessage.id))
+    } else if (data && data[0]) {
+      await markMessageAsRead(data[0].id)
     }
   }
 
@@ -160,6 +359,23 @@ export default function ChatRoomPage() {
       document.removeEventListener('mousedown', handleClickOutside)
     }
   }, [showEmojiPicker])
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setShowMenu(false)
+      }
+    }
+
+    if (showMenu) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [showMenu])
 
   const emojis = [
     '😀', '😂', '🤣', '😊', '😍', '🥰', '😘', '😜',
@@ -202,7 +418,7 @@ export default function ChatRoomPage() {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div ref={messagesContainerRef} className="flex-1 overflow-auto p-4 space-y-4">
         {messages.length === 0 ? (
           <div className="text-center text-gray-400 py-8">
             <p>ยังไม่มีข้อความ</p>
@@ -216,29 +432,67 @@ export default function ChatRoomPage() {
                 key={msg.id}
                 className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
               >
-                <div className={`max-w-xs md:max-w-md ${isMe ? 'order-2' : 'order-1'}`}>
-                  <p className={`text-xs ${isMe ? 'text-blue-600' : 'text-gray-500'} mb-1`}>
-                    {msg.sender_name}
-                  </p>
-                  <div
-                    className={`px-4 py-2 rounded-2xl ${
-                      isMe
-                        ? 'bg-blue-600 text-white rounded-br-sm'
-                        : 'bg-white text-gray-800 rounded-bl-sm'
-                    }`}
-                  >
-                    <p className="break-words">{msg.message}</p>
+                <div className={`max-w-xs md:max-w-md lg:max-w-lg ${isMe ? 'order-2' : 'order-1'}`}>
+                  <div className="flex items-end gap-1">
+                    {!isMe && (
+                      <p className={`text-xs ${isMe ? 'text-blue-600' : 'text-gray-500'} mb-1`}>
+                        {msg.sender_name}
+                      </p>
+                    )}
+                    <div
+                      className={`px-4 py-2 rounded-2xl ${
+                        isMe
+                          ? 'bg-blue-600 text-white rounded-br-sm'
+                          : 'bg-white text-gray-800 rounded-bl-sm'
+                      }`}
+                    >
+                      {/* Show image if exists */}
+                      {msg.image_url && (
+                        <img
+                          src={msg.image_url}
+                          alt="Uploaded"
+                          className="max-w-[200px] max-h-[200px] rounded-lg mb-2 cursor-pointer hover:opacity-90 transition-opacity"
+                          loading="lazy"
+                          onClick={() => setFullImage(msg.image_url!)}
+                        />
+                      )}
+                      {/* Show text message if exists */}
+                      {msg.message && (
+                        <p className="break-words">{msg.message}</p>
+                      )}
+                    </div>
                   </div>
-                  <p className={`text-xs text-gray-400 mt-1 ${isMe ? 'text-right' : 'text-left'}`}>
-                    {new Date(msg.created_at).toLocaleTimeString('th-TH', {
-                      hour: '2-digit',
-                      minute: '2-digit'
-                    })}
-                  </p>
+                  <div className={`flex items-center gap-2 ${isMe ? 'justify-end' : 'justify-start'}`}>
+                    <p className={`text-xs text-gray-400 mt-1`}>
+                      {new Date(msg.created_at).toLocaleTimeString('th-TH', {
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </p>
+                    {isMe && !msg.id.startsWith('temp-') && (
+                      <span className="text-xs text-blue-500">
+                        {messageReads[msg.id]?.filter(r => r !== userName).length > 0 ? '✓✓' : '✓'}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             )
           })
+        )}
+        {/* New messages indicator */}
+        {hasNewMessages && (
+          <div className="flex justify-center">
+            <button
+              onClick={() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+                markVisibleMessagesAsRead()
+              }}
+              className="bg-blue-500 text-white px-4 py-2 rounded-full text-sm shadow-lg hover:bg-blue-600 transition-colors"
+            >
+              ข้อความใหม่ ↓
+            </button>
+          </div>
         )}
         <div ref={messagesEndRef} />
       </div>
@@ -265,30 +519,104 @@ export default function ChatRoomPage() {
           </div>
         )}
 
-        <form onSubmit={sendMessage} className="flex gap-2">
+        {/* Image preview */}
+        {imagePreview && (
+          <div className="mb-2 relative inline-block">
+            <img
+              src={imagePreview}
+              alt="Preview"
+              className="max-w-xs max-h-40 rounded-lg border"
+            />
+            <button
+              type="button"
+              onClick={clearImage}
+              className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm hover:bg-red-600"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
+        <form onSubmit={sendMessage} className="flex gap-2 items-center relative">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleImageSelect}
+            className="hidden"
+          />
+
+          {/* Menu popup */}
+          {showMenu && (
+            <div
+              ref={menuRef}
+              className="absolute bottom-14 left-0 bg-white border border-gray-200 rounded-lg shadow-lg flex flex-col overflow-hidden"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  fileInputRef.current?.click()
+                  setShowMenu(false)
+                }}
+                className="px-4 py-3 hover:bg-gray-100 transition-colors"
+              >
+                <span className="text-2xl">📷</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowMenu(false)
+                  setShowEmojiPicker(true)
+                }}
+                className="px-4 py-3 hover:bg-gray-100 transition-colors"
+              >
+                <span className="text-2xl">😊</span>
+              </button>
+            </div>
+          )}
+
+          {/* Menu button */}
           <button
             type="button"
-            onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+            onClick={() => setShowMenu(!showMenu)}
             className="px-3 py-2 text-2xl hover:bg-gray-100 rounded-full transition-colors"
           >
-            {showEmojiPicker ? '❌' : '😊'}
+            {showMenu ? '×' : '+'}
           </button>
           <input
             type="text"
             value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
+            onChange={handleInputChange}
             placeholder="พิมพ์ข้อความ..."
             className="flex-1 px-4 py-2 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
           />
-          <button
-            type="submit"
-            disabled={!newMessage.trim()}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white px-6 py-2 rounded-full font-medium transition-colors"
-          >
-            ส่ง
-          </button>
+          {uploadingImage && (
+            <span className="text-sm text-gray-500">⏳</span>
+          )}
         </form>
       </div>
+
+      {/* Full image modal */}
+      {fullImage && (
+        <div
+          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
+          onClick={() => setFullImage(null)}
+        >
+          <div className="relative max-w-4xl max-h-[90vh]">
+            <img
+              src={fullImage}
+              alt="Full size"
+              className="max-w-full max-h-[90vh] object-contain"
+            />
+            <button
+              onClick={() => setFullImage(null)}
+              className="absolute -top-10 right-0 text-white text-3xl hover:text-gray-300"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
