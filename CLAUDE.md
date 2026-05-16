@@ -4,7 +4,7 @@
 
 ## ภาพรวมโปรเจกต์
 
-แอปพลิเคชันแชทสดแบบไม่ระบุตัวตนด้วยรหัสห้อง ผู้ใช้กรอกชื่อและรหัสห้องเพื่อเข้าร่วม/สร้างห้องแชท ผู้ใช้หลายคนที่ใช้รหัสห้องเดียวกันสามารถแชทร่วมกันได้实时 หน้าจอเป็นภาษาไทย
+แอปพลิเคชันแชทสดแบบไม่ระบุตัวตนด้วยรหัสห้อง ผู้ใช้สามารถสร้างห้องแชทใหม่ หรือเข้าร่วมห้องที่มีอยู่ ผู้ใช้หลายคนที่ใช้รหัสห้องเดียวกันสามารถแชทร่วมกันได้实时 หน้าจอเป็นภาษาไทย
 
 **ข้อจำกัด:** รหัสห้องต้องเป็นภาษาอังกฤษและตัวเลขเท่านั้น (A-Z, 0-9) เพื่อป้องกันปัญหา Supabase Storage ที่ไม่รองรับภาษาไทยใน path
 
@@ -16,6 +16,46 @@ npm run build        # Production build
 npm run start        # Run production server
 npm run lint         # Run ESLint
 ```
+
+## ฟีเจอร์หลัก
+
+### 1. สร้าง/เข้าห้องแชท
+- **สร้างห้อง (✨)**: สร้างรหัสสุ่ม 6 ตัวอักษร (A-Z, 0-9) + insert ข้อความ system เพื่อ mark ว่าห้องถูกสร้างแล้ว
+- **เข้าห้อง (🔑)**: กรอกรหัสห้องที่มีอยู่จริงเพื่อเข้าร่วม
+- ต้องสร้างห้องก่อน ถึงจะสามารถเข้าได้
+
+### 2. ระบบข้อความ
+- **ข้อความ SYSTEM**: แสดงตรงกลาง สีเทาจาง รูปแบบ pill (เช่น "created at 17/5/2569 03:03:23")
+- **Optimistic UI**: แสดงข้อความทันทีด้วย temp ID แทนที่ด้วยข้อความจริงเมื่อ realtime ยืนยัน
+- **New Messages Indicator**: ปุ่ม "ข้อความใหม่ ↓" เมื่อมีข้อความใหม่และไม่ได้อยู่ด้านล่าง
+
+### 3. Read Receipts (การยืนยันการอ่าน)
+- Broadcast ผ่าน `channel.send({ type: 'broadcast', event: 'message-read' })`
+- บันทึกลงตาราง `message_reads`
+- Mark ว่าอ่านแล้วเมื่อเลื่อนมาที่ด้านล่าง (threshold 100px)
+- แสดง ✓ (ส่งแล้ว) และ ✓✓ (อ่านแล้ว) สำหรับข้อความของตัวเอง
+
+### 4. Image Uploads (การอัปโหลดรูป)
+- เก็บใน Supabase Storage bucket `attachments`
+- ขนาดสูงสุด 5MB, เฉพาะไฟล์รูปภาพ
+- รูปแบบ path: `{roomCode}/{timestamp}_{random}.{ext}`
+- แสดง preview ก่อนส่ง, คลิกเพื่อดูขนาดเต็ม (modal)
+- Lazy-loaded ในห้องแชท
+
+### 5. Emoji Picker
+- แสดงเมื่อกดปุ่ม + แล้วเลือก emoji
+- 48 emoji ให้เลือก (grid 8x6)
+- Click เพื่อ insert ลงในช่องพิมพ์
+
+### 6. Sound Effect
+- เล่นเสียง "bloop" แบบ LINE เมื่อกดส่งข้อความ
+- ใช้ Web Audio API (ไม่ต้องใช้ไฟล์เสียงภายนอก)
+- รองรับทั้ง desktop และ mobile (resume AudioContext อัตโนมัติ)
+
+### 7. UI Components
+- **Send Button**: อยู่ด้านในช่องพิมพ์ด้านขวา (Instagram-style), ใช้ไอคอนจาก `/icon/send.png`
+- **Menu Button**: ปุ่ม + เปิดเมนู (📷 อัปโหลดรูป, 😊 emoji)
+- **Full Image Modal**: คลิกรูปเพื่อดูขนาดเต็ม
 
 ## การตั้งค่า Database (ครั้งแรก)
 
@@ -114,11 +154,14 @@ WITH CHECK ( bucket_id = 'attachments' );
 ```
 app/
 ├── page.tsx              # Root page (redirect ไป /chat)
-├── chat/page.tsx         # หน้า login (กรอกชื่อ + รหัสห้อง A-Z, 0-9)
+├── chat/page.tsx         # หน้า login (สร้าง/เข้าห้อง, รหัส A-Z, 0-9)
 └── chat/[roomCode]/page.tsx  # ห้องแชท实时
 lib/
 ├── types.ts              # TypeScript interfaces (Message, MessageRead)
 └── hash.ts               # การ encode/decode รหัสห้อง
+public/
+└── icon/
+    └── send.png          # ไอคอนปุ่มส่ง
 ```
 
 ### รูปแบบสำคัญ
@@ -133,18 +176,7 @@ lib/
 1. `postgres_changes` - ฟัง INSERT บนตาราง messages กรองด้วย `room_code=eq.{roomCode}`
 2. `broadcast` - สำหรับ read receipts ผ่าน event 'message-read'
 
-**Read Receipts (การยืนยันการอ่าน)**:
-- Broadcast ผ่าน `channel.send({ type: 'broadcast', event: 'message-read' })` แบบ实时
-- บันทึกลงตาราง `message_reads` ด้วยสำหรับประวัติ
-- ข้อความจะถูก mark ว่าอ่านแล้วเมื่อเลื่อนเข้ามาในมุมมอง (threshold 100px)
-- แสดงสถานะ ✓ (ส่งแล้ว) และ ✓✓ (อ่านแล้ว) สำหรับข้อความของตัวเอง
-
-**Image Uploads (การอัปโหลดรูป)**:
-- เก็บใน Supabase Storage bucket `attachments`
-- ขนาดสูงสุด 5MB, เฉพาะไฟล์รูปภาพ
-- รูปแบบ path: `{roomCode}/{timestamp}_{random}.{ext}`
-- Lazy-loaded ในห้องแชท, คลิกเพื่อดูขนาดเต็ม
-- ต้องตั้งค่า Storage Policies ให้อัปโหลดและอ่านได้แบบ public
+**SYSTEM Messages**: ข้อความจาก `sender_name='SYSTEM'` แสดงตรงกลาง สไตล์พิเศษ (สีเทาจาง, pill-shaped) ไม่แสดงชื่อผู้ส่ง/เวลา
 
 ## ไฟล์ SQL อ้างอิง
 

@@ -303,11 +303,11 @@ export default function ChatRoomPage() {
       gainNode.connect(audioContext.destination)
 
       // LINE-style: quick "bloop" sound
-      oscillator.type = 'sine'
-      oscillator.frequency.setValueAtTime(2500, audioContext.currentTime)
+      oscillator.type = 'triangle'
+      oscillator.frequency.setValueAtTime(500, audioContext.currentTime)
       oscillator.frequency.exponentialRampToValueAtTime(400, audioContext.currentTime + 0.08)
 
-      gainNode.gain.setValueAtTime(0.25, audioContext.currentTime)
+      gainNode.gain.setValueAtTime(0.07, audioContext.currentTime)
       gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.08)
 
       oscillator.start(audioContext.currentTime)
@@ -461,6 +461,20 @@ export default function ChatRoomPage() {
         ) : (
           messages.map((msg) => {
             const isMe = msg.sender_name === userName
+            const isSystem = msg.sender_name === 'SYSTEM'
+
+            // System message - centered at top
+            if (isSystem) {
+              return (
+                <div key={msg.id} className="flex justify-center">
+                  <p className="text-xs text-gray-400 bg-gray-200 px-3 py-1 rounded-full">
+                    {msg.message}
+                  </p>
+                </div>
+              )
+            }
+
+            // Regular chat message
             return (
               <div
                 key={msg.id}
