@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { encodeRoomCode } from '@/lib/hash'
 import { supabase } from '@/utils/supabase'
+import { getRoomHistory, saveRoomHistory, removeRoomFromHistory, clearRoomHistory, getLastUserName, type RoomHistoryItem } from '@/lib/roomHistory'
 
 export default function ChatLandingPage() {
   const router = useRouter()
@@ -12,6 +13,15 @@ export default function ChatLandingPage() {
   const [roomCode, setRoomCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [recentRooms, setRecentRooms] = useState<RoomHistoryItem[]>([])
+  const [showRecentModal, setShowRecentModal] = useState(false)
+
+  useEffect(() => {
+    setRecentRooms(getRoomHistory())
+
+    const savedName = localStorage.getItem('chatUserName') || getLastUserName()
+    if (savedName) setName(savedName)
+  }, [])
 
   // สร้างรหัสห้องแบบสุ่ม
   const generateRoomCode = () => {
@@ -37,6 +47,53 @@ export default function ChatLandingPage() {
     }
 
     return data && data.length > 0
+  }
+
+  const formatTimeAgo = (dateString: string): string => {
+    const now = new Date()
+    const date = new Date(dateString)
+    const diffMs = now.getTime() - date.getTime()
+    const diffMins = Math.floor(diffMs / 60000)
+    const diffHours = Math.floor(diffMs / 3600000)
+    const diffDays = Math.floor(diffMs / 86400000)
+
+    if (diffMins < 1) return 'เมื่อสักครู่'
+    if (diffMins < 60) return `${diffMins} นาทีที่แล้ว`
+    if (diffHours < 24) return `${diffHours} ชม.ที่แล้ว`
+    return `${diffDays} วันที่แล้ว`
+  }
+
+  const handleQuickJoin = (roomCode: string) => {
+    // ดึงชื่อจาก room history ก่อน (เพราะเราบันทึกไว้แล้ว)
+    const roomHistoryItem = recentRooms.find((r) => r.roomCode === roomCode)
+    const userName = roomHistoryItem?.userName || name.trim() || getLastUserName() || ''
+
+    console.log('handleQuickJoin - roomHistoryItem:', roomHistoryItem, 'userName:', userName)
+
+    if (!userName) {
+      setError('กรุณากรอกชื่อของคุณก่อนเข้าห้อง')
+      setShowRecentModal(false)
+      return
+    }
+
+    // บันทึกชื่อที่ใช้
+    try {
+      localStorage.setItem('chatUserName', userName)
+      localStorage.setItem('chatRoomCode', roomCode)
+    } catch (e) {
+      console.error('localStorage set error:', e)
+    }
+
+    saveRoomHistory(roomCode, userName, 'joined', `ห้อง ${roomCode}`)
+
+    const encoded = encodeRoomCode(roomCode)
+    router.push(`/chat/${encoded}`)
+  }
+
+  const handleRemoveRoom = (e: React.MouseEvent, roomCode: string) => {
+    e.stopPropagation()
+    removeRoomFromHistory(roomCode)
+    setRecentRooms(getRoomHistory())
   }
 
   const handleRoomCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -110,8 +167,16 @@ export default function ChatLandingPage() {
       }
 
       // Save to localStorage
-      localStorage.setItem('chatUserName', name.trim())
+      const nameToSave = name.trim()
+      console.log('handleSubmit - Saving name to localStorage:', nameToSave)
+      localStorage.setItem('chatUserName', nameToSave)
       localStorage.setItem('chatRoomCode', finalRoomCode)
+
+      // Verify it was saved
+      const savedName = localStorage.getItem('chatUserName')
+      console.log('handleSubmit - Verified saved name:', savedName)
+
+      saveRoomHistory(finalRoomCode, nameToSave, mode, `ห้อง ${finalRoomCode}`)
 
       // Navigate with encoded room code
       const encoded = encodeRoomCode(finalRoomCode)
@@ -239,7 +304,98 @@ export default function ChatLandingPage() {
             {loading ? 'กำลังดำเนินการ...' : mode === 'join' ? 'เข้าห้องแชท' : 'สร้างและเข้าห้อง'}
           </button>
         </form>
+
+        {/* Recent Rooms Link */}
+        {recentRooms.length > 0 && (
+          <div className="mt-4 text-center">
+            <button
+              onClick={() => setShowRecentModal(true)}
+              className="text-blue-600 hover:text-blue-700 underline underline-offset-2 text-sm font-medium"
+            >
+              รายการล่าสุด ({recentRooms.length})
+            </button>
+          </div>
+        )}
       </div>
+
+      {/* Recent Rooms Modal */}
+      {showRecentModal && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50"
+          onClick={() => setShowRecentModal(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-gray-800">รายการล่าสุด</h2>
+              <button
+                onClick={() => setShowRecentModal(false)}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto flex-1">
+              {recentRooms.length === 0 ? (
+                <div className="text-center text-gray-400 py-8">
+                  ไม่มีรายการห้อง
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {recentRooms.map((room) => (
+                    <div
+                      key={room.roomCode}
+                      onClick={() => {
+                        handleQuickJoin(room.roomCode)
+                        setShowRecentModal(false)
+                      }}
+                      className="w-full flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-lg">
+                          {room.action === 'created' ? '✨' : '🔑'}
+                        </span>
+                        <div className="text-left">
+                          <div className="font-medium text-gray-800">
+                            {room.roomCode}
+                          </div>
+                          <div className="text-xs text-gray-400">
+                            {formatTimeAgo(room.lastAccess)}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleRemoveRoom(e, room.roomCode)
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 transition-all"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-gray-200">
+              <button
+                onClick={() => {
+                  clearRoomHistory()
+                  setRecentRooms([])
+                }}
+                className="w-full py-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors text-sm font-medium"
+              >
+                ล้างรายการทั้งหมด
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
