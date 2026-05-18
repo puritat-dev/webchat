@@ -176,7 +176,7 @@ export default function ChatLandingPage() {
       const savedName = localStorage.getItem('chatUserName')
       console.log('handleSubmit - Verified saved name:', savedName)
 
-      saveRoomHistory(finalRoomCode, nameToSave, mode, `ห้อง ${finalRoomCode}`)
+      saveRoomHistory(finalRoomCode, nameToSave, mode === 'create' ? 'created' : 'joined', `ห้อง ${finalRoomCode}`)
 
       // Navigate with encoded room code
       const encoded = encodeRoomCode(finalRoomCode)
