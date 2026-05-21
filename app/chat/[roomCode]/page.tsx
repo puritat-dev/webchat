@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/utils/supabase'
 import { RealtimeChannel } from '@supabase/supabase-js'
@@ -424,6 +424,52 @@ export default function ChatRoomPage() {
     setNewMessage((prev) => prev + emoji)
   }
 
+  // Format date for separator
+  const formatDateSeparator = (dateString: string): string => {
+    const date = new Date(dateString)
+    const today = new Date()
+    const yesterday = new Date(today)
+    yesterday.setDate(yesterday.getDate() - 1)
+
+    // Reset time to midnight for comparison
+    const resetTime = (d: Date) => {
+      d.setHours(0, 0, 0, 0)
+      return d
+    }
+
+    const messageDate = resetTime(new Date(date))
+    const todayDate = resetTime(new Date())
+    const yesterdayDate = resetTime(yesterday)
+
+    if (messageDate.getTime() === todayDate.getTime()) {
+      return 'วันนี้'
+    } else if (messageDate.getTime() === yesterdayDate.getTime()) {
+      return 'เมื่อวาน'
+    } else {
+      return date.toLocaleDateString('th-TH', {
+        day: 'numeric',
+        month: 'short',
+        year: date.getFullYear() !== today.getFullYear() ? '2-digit' : undefined
+      })
+    }
+  }
+
+  // Check if date separator should be shown
+  const shouldShowDateSeparator = (currentMsg: Message, prevMsg?: Message): boolean => {
+    if (!prevMsg) return true
+
+    const currentDate = new Date(currentMsg.created_at)
+    const prevDate = new Date(prevMsg.created_at)
+
+    // Reset time to midnight for comparison
+    const resetTime = (d: Date) => {
+      d.setHours(0, 0, 0, 0)
+      return d
+    }
+
+    return resetTime(currentDate).getTime() !== resetTime(prevDate).getTime()
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
@@ -459,72 +505,83 @@ export default function ChatRoomPage() {
             <p className="text-sm">เริ่มแชทกันเลย!</p>
           </div>
         ) : (
-          messages.map((msg) => {
+          messages.map((msg, index) => {
             const isMe = msg.sender_name === userName
             const isSystem = msg.sender_name === 'SYSTEM'
+            const prevMsg = index > 0 ? messages[index - 1] : undefined
 
-            // System message - centered at top
-            if (isSystem) {
-              return (
-                <div key={msg.id} className="flex justify-center">
-                  <p className="text-xs text-gray-400 bg-gray-200 px-3 py-1 rounded-full">
-                    {msg.message}
-                  </p>
-                </div>
-              )
-            }
+            const showDateSeparator = shouldShowDateSeparator(msg, prevMsg)
 
-            // Regular chat message
             return (
-              <div
-                key={msg.id}
-                className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
-              >
-                <div className={`max-w-xs md:max-w-md lg:max-w-lg ${isMe ? 'order-2' : 'order-1'}`}>
-                  <div className="flex items-end gap-1">
-                    {!isMe && (
-                      <p className={`text-xs ${isMe ? 'text-blue-600' : 'text-gray-500'} mb-1`}>
-                        {msg.sender_name}
-                      </p>
-                    )}
-                    <div
-                      className={`px-1 py-1 rounded-xl ${
-                        isMe
-                          ? 'bg-blue-600 text-white rounded-br-xs'
-                          : 'bg-white text-gray-800 rounded-bl-xs'
-                      }`}
-                    >
-                      {/* Show image if exists */}
-                      {msg.image_url && (
-                        <img
-                          src={msg.image_url}
-                          alt="Uploaded"
-                          className="max-w-[200px] max-h-[200px] rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-                          loading="lazy"
-                          onClick={() => setFullImage(msg.image_url!)}
-                        />
-                      )}
-                      {/* Show text message if exists */}
-                      {msg.message && (
-                        <p className="break-words">{msg.message}</p>
-                      )}
+              <React.Fragment key={msg.id}>
+                {/* Date separator */}
+                {showDateSeparator && (
+                  <div className="flex justify-center my-4">
+                    <span className="text-xs text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+                      - {formatDateSeparator(msg.created_at)} -
+                    </span>
+                  </div>
+                )}
+
+                {/* System message - centered at top */}
+                {isSystem ? (
+                  <div className="flex justify-center">
+                    <p className="text-xs text-gray-400 bg-gray-200 px-3 py-1 rounded-full">
+                      {msg.message}
+                    </p>
+                  </div>
+                ) : (
+                  // Regular chat message
+                  <div
+                    className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div className={`max-w-xs md:max-w-md lg:max-w-lg ${isMe ? 'order-2' : 'order-1'}`}>
+                      <div className="flex items-end gap-1">
+                        {!isMe && (
+                          <p className={`text-xs ${isMe ? 'text-blue-600' : 'text-gray-500'} mb-1`}>
+                            {msg.sender_name}
+                          </p>
+                        )}
+                        <div
+                          className={`px-1 py-1 rounded-xl ${
+                            isMe
+                              ? 'bg-blue-600 text-white rounded-br-xs'
+                              : 'bg-white text-gray-800 rounded-bl-xs'
+                          }`}
+                        >
+                          {/* Show image if exists */}
+                          {msg.image_url && (
+                            <img
+                              src={msg.image_url}
+                              alt="Uploaded"
+                              className="max-w-[200px] max-h-[200px] rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+                              loading="lazy"
+                              onClick={() => setFullImage(msg.image_url!)}
+                            />
+                          )}
+                          {/* Show text message if exists */}
+                          {msg.message && (
+                            <p className="break-words">{msg.message}</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className={`flex items-center gap-2 ${isMe ? 'justify-end' : 'justify-start'}`}>
+                        <p className={`text-xs text-gray-400 mt-1`}>
+                          {new Date(msg.created_at).toLocaleTimeString('th-TH', {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </p>
+                        {isMe && !msg.id.startsWith('temp-') && (
+                          <span className="text-xs text-blue-500">
+                            {messageReads[msg.id]?.filter(r => r !== userName).length > 0 ? '✓✓' : '✓'}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                  <div className={`flex items-center gap-2 ${isMe ? 'justify-end' : 'justify-start'}`}>
-                    <p className={`text-xs text-gray-400 mt-1`}>
-                      {new Date(msg.created_at).toLocaleTimeString('th-TH', {
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      })}
-                    </p>
-                    {isMe && !msg.id.startsWith('temp-') && (
-                      <span className="text-xs text-blue-500">
-                        {messageReads[msg.id]?.filter(r => r !== userName).length > 0 ? '✓✓' : '✓'}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
+                )}
+              </React.Fragment>
             )
           })
         )}
